@@ -34,17 +34,17 @@ jobs:
 
       - name: Rename Binary (Unix)
         if: runner.os != 'Windows'
-        run: mv target/release/oseti-beta target/release/oseti-beta-${{ matrix.os }}
+        run: mv target/release/osechi-beta target/release/osechi-beta-${{ matrix.os }}
 
       - name: Rename Binary (Windows)
         if: runner.os == 'Windows'
-        run: mv target/release/oseti-beta.exe target/release/oseti-beta-${{ matrix.os }}.exe
+        run: mv target/release/osechi-beta.exe target/release/osechi-beta-${{ matrix.os }}.exe
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: oseti-beta-${{ matrix.os }}
-          path: target/release/oseti-beta-*
+          name: osechi-beta-${{ matrix.os }}
+          path: target/release/osechi-beta-*
 
   release:
     name: Create Release
