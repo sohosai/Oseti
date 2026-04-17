@@ -1,0 +1,68 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux Dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxcursor-dev libxi-dev libxrandr-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libv4l-dev
+
+      - name: Build Release
+        run: cargo build --release
+
+      - name: Rename Binary (Unix)
+        if: runner.os != 'Windows'
+        run: mv target/release/oseti-beta target/release/oseti-beta-${{ matrix.os }}
+
+      - name: Rename Binary (Windows)
+        if: runner.os == 'Windows'
+        run: mv target/release/oseti-beta.exe target/release/oseti-beta-${{ matrix.os }}.exe
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: oseti-beta-${{ matrix.os }}
+          path: target/release/oseti-beta-*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v0.1.0-build.${{ github.run_number }}"
+          name: "Release build ${{ github.run_number }}"
+          files: artifacts/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,15 @@
+[package]
+name = "oseti-beta"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.33.3"
+rayon = "1.10"
+nokhwa = { version = "0.10", features = ["input-native"] }
+num_cpus = "1.16"
+rfd = "0.17.2"
+chrono = "0.4.44"
+openh264 = "0.9.3"
+mp4 = "0.14.0"
+image = "0.25.10"
