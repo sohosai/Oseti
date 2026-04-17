@@ -34,17 +34,17 @@ jobs:
 
       - name: Rename Binary (Unix)
         if: runner.os != 'Windows'
-        run: mv target/release/osechi target/release/osechi-${{ matrix.os }}
+        run: mv target/release/Osechi target/release/Osechi-${{ matrix.os }}
 
       - name: Rename Binary (Windows)
         if: runner.os == 'Windows'
-        run: mv target/release/osechi.exe target/release/osechi-${{ matrix.os }}.exe
+        run: mv target/release/Osechi.exe target/release/Osechi-${{ matrix.os }}.exe
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: osechi-${{ matrix.os }}
-          path: target/release/osechi-*
+          path: target/release/Osechi-*
 
   release:
     name: Create Release
@@ -62,7 +62,7 @@ jobs:
         with:
           tag_name: "v0.1.0-build.${{ github.run_number }}"
           name: "Release build ${{ github.run_number }}"
-          files: artifacts/*
+          files: artifacts/*/Osechi-*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
