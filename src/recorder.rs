@@ -3,8 +3,8 @@ use mp4::{
     TrackConfig, TrackType,
 };
 use openh264::encoder::{Encoder, FrameType};
+use openh264::formats::{RgbSliceU8, YUVBuffer};
 use openh264::nal_units;
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -196,75 +196,12 @@ impl RecorderManager {
                             }
                         }
 
-                        let pixels = &frame.pixels;
-                        let y_len = target_width * target_height;
-                        let uv_len = (target_width / 2) * (target_height / 2);
-                        let mut yuv_buf = vec![0u8; y_len + uv_len * 2];
-
-                        let (y_plane, uv_planes) = yuv_buf.split_at_mut(y_len);
-                        let (u_plane, v_plane) = uv_planes.split_at_mut(uv_len);
-
-                        y_plane
-                            .par_chunks_mut(target_width)
-                            .enumerate()
-                            .for_each(|(y, row)| {
-                                for x in 0..target_width {
-                                    let idx = (y * width + x) * 3;
-                                    if idx + 2 < pixels.len() {
-                                        let r = pixels[idx] as f32;
-                                        let g = pixels[idx + 1] as f32;
-                                        let b = pixels[idx + 2] as f32;
-                                        let y_val = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
-                                        row[x] = y_val;
-                                    }
-                                }
-                            });
-
-                        u_plane
-                            .par_chunks_mut(target_width / 2)
-                            .enumerate()
-                            .for_each(|(y, row)| {
-                                let src_y = y * 2;
-                                for x in 0..target_width / 2 {
-                                    let src_x = x * 2;
-                                    let idx = (src_y * width + src_x) * 3;
-                                    if idx + 2 < pixels.len() {
-                                        let r = pixels[idx] as f32;
-                                        let g = pixels[idx + 1] as f32;
-                                        let b = pixels[idx + 2] as f32;
-                                        let u_val =
-                                            (-0.147 * r - 0.289 * g + 0.436 * b + 128.0) as u8;
-                                        row[x] = u_val;
-                                    }
-                                }
-                            });
-
-                        v_plane
-                            .par_chunks_mut(target_width / 2)
-                            .enumerate()
-                            .for_each(|(y, row)| {
-                                let src_y = y * 2;
-                                for x in 0..target_width / 2 {
-                                    let src_x = x * 2;
-                                    let idx = (src_y * width + src_x) * 3;
-                                    if idx + 2 < pixels.len() {
-                                        let r = pixels[idx] as f32;
-                                        let g = pixels[idx + 1] as f32;
-                                        let b = pixels[idx + 2] as f32;
-                                        let v_val =
-                                            (0.615 * r - 0.515 * g - 0.100 * b + 128.0) as u8;
-                                        row[x] = v_val;
-                                    }
-                                }
-                            });
-
                         if let Some(ref mut enc) = encoder {
-                            use openh264::formats::YUVBuffer;
-                            let yuv = YUVBuffer::from_vec(yuv_buf, target_width, target_height);
+                            let rgb = RgbSliceU8::new(frame.pixels.as_slice(), (target_width, target_height));
+                            let yuv = YUVBuffer::from_rgb8_source(rgb);
                             if let Ok(bitstream) = enc.encode(&yuv) {
                                 let bytes = bitstream.to_vec();
-                                let is_sync =
-                                    matches!(bitstream.frame_type(), FrameType::IDR | FrameType::I);
+                                let is_sync = matches!(bitstream.frame_type(), FrameType::IDR | FrameType::I);
                                 let _ = io_tx.try_send(EncodedFrame {
                                     bytes,
                                     is_sync,
