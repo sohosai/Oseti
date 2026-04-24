@@ -1,11 +1,11 @@
 [package]
 name = "Osechi"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 
 [dependencies]
 eframe = "0.33.3"
-rayon = "1.10"
+rayon = "1.1"
 nokhwa = { version = "0.10", features = ["input-native"] }
 num_cpus = "1.16"
 rfd = "0.17.2"
