@@ -1,13 +1,13 @@
 use openh264::encoder::Encoder;
 use rayon::prelude::*;
-use std::fs::File;
-use std::io::Write;
-
-use crate::camera::FrameData;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
+
+use crate::source::FrameData;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RecordingTarget {
@@ -27,9 +27,9 @@ impl RecordingTarget {
 }
 
 pub struct RecordingSession {
-    target: RecordingTarget,
-    tx: mpsc::SyncSender<Arc<FrameData>>,
-    handle: Option<thread::JoinHandle<()>>,
+    tx: Option<mpsc::SyncSender<Arc<FrameData>>>,
+    encode_handle: Option<thread::JoinHandle<()>>,
+    writer_handle: Option<thread::JoinHandle<()>>,
 }
 
 pub struct RecorderManager {
@@ -61,21 +61,20 @@ impl RecorderManager {
     pub fn start_selected(&mut self) {
         for (target, enabled) in &self.record_configs {
             if *enabled && !self.sessions.contains_key(target) {
-                let (tx, rx) = mpsc::sync_channel::<Arc<FrameData>>(5); // バッファを持たせる
+                let (tx, rx) = mpsc::sync_channel::<Arc<FrameData>>(5);
+                let (io_tx, io_rx) = mpsc::sync_channel::<Vec<u8>>(30);
 
-                let _target_clone = *target;
-                let save_dir = self.save_dir.clone();
-                let name = target.name();
+                // mp4化前の段階として、現状は Annex-B H.264 を保存する
+                let filename = format!(
+                    "{}_{}.h264",
+                    chrono::Local::now().format("%Y%m%d_%H%M%S"),
+                    target.name()
+                );
+                let filepath = self.save_dir.join(filename);
 
-                let handle = thread::spawn(move || {
-                    let filename = format!(
-                        "{}_{}.h264",
-                        chrono::Local::now().format("%Y%m%d_%H%M%S"),
-                        name
-                    );
-                    let filepath = save_dir.join(filename);
-
-                    let mut file = match File::create(&filepath) {
+                let writer_path = filepath.clone();
+                let writer_handle = thread::spawn(move || {
+                    let file = match File::create(&writer_path) {
                         Ok(f) => f,
                         Err(e) => {
                             eprintln!("Failed to create recording file: {}", e);
@@ -83,8 +82,23 @@ impl RecorderManager {
                         }
                     };
 
-                    println!("Started recording to {:?}", filepath);
+                    println!("Started recording to {:?}", writer_path);
+                    let mut writer = BufWriter::new(file);
 
+                    while let Ok(data) = io_rx.recv() {
+                        if let Err(e) = writer.write_all(&data) {
+                            eprintln!("Recording write error: {}", e);
+                            break;
+                        }
+                    }
+
+                    if let Err(e) = writer.flush() {
+                        eprintln!("Recording flush error: {}", e);
+                    }
+                    println!("Stopped recording to {:?}", writer_path);
+                });
+
+                let encode_handle = thread::spawn(move || {
                     let mut encoder: Option<Encoder> = None;
                     let mut target_width = 1280;
                     let mut target_height = 720;
@@ -93,7 +107,6 @@ impl RecorderManager {
                         let width = frame.width as usize;
                         let height = frame.height as usize;
 
-                        // 初期化
                         if encoder.is_none() {
                             target_width = width;
                             target_height = height;
@@ -106,15 +119,11 @@ impl RecorderManager {
                             }
                         }
 
-                        // openh264 は YUV420p を要求する
-                        // RGB -> YUV420p 高速変換 (Rayon利用)
                         let pixels = &frame.pixels;
                         let y_len = target_width * target_height;
                         let uv_len = (target_width / 2) * (target_height / 2);
-
                         let mut yuv_buf = vec![0u8; y_len + uv_len * 2];
 
-                        // Y平面の変換
                         let (y_plane, uv_planes) = yuv_buf.split_at_mut(y_len);
                         let (u_plane, v_plane) = uv_planes.split_at_mut(uv_len);
 
@@ -134,7 +143,6 @@ impl RecorderManager {
                                 }
                             });
 
-                        // UV平面の変換
                         u_plane
                             .par_chunks_mut(target_width / 2)
                             .enumerate()
@@ -147,7 +155,6 @@ impl RecorderManager {
                                         let r = pixels[idx] as f32;
                                         let g = pixels[idx + 1] as f32;
                                         let b = pixels[idx + 2] as f32;
-
                                         let u_val =
                                             (-0.147 * r - 0.289 * g + 0.436 * b + 128.0) as u8;
                                         row[x] = u_val;
@@ -155,7 +162,6 @@ impl RecorderManager {
                                 }
                             });
 
-                        // V平面の変換
                         v_plane
                             .par_chunks_mut(target_width / 2)
                             .enumerate()
@@ -168,7 +174,6 @@ impl RecorderManager {
                                         let r = pixels[idx] as f32;
                                         let g = pixels[idx + 1] as f32;
                                         let b = pixels[idx + 2] as f32;
-
                                         let v_val =
                                             (0.615 * r - 0.515 * g - 0.100 * b + 128.0) as u8;
                                         row[x] = v_val;
@@ -182,20 +187,18 @@ impl RecorderManager {
                             if let Ok(bitstream) = enc.encode(&yuv) {
                                 let mut bits = Vec::new();
                                 bitstream.write_vec(&mut bits);
-                                let _ = file.write_all(&bits);
+                                let _ = io_tx.try_send(bits);
                             }
                         }
                     }
-
-                    println!("Stopped recording to {:?}", filepath);
                 });
 
                 self.sessions.insert(
                     *target,
                     RecordingSession {
-                        target: *target,
-                        tx,
-                        handle: Some(handle),
+                        tx: Some(tx),
+                        encode_handle: Some(encode_handle),
+                        writer_handle: Some(writer_handle),
                     },
                 );
             }
@@ -203,13 +206,27 @@ impl RecorderManager {
     }
 
     pub fn stop_all(&mut self) {
-        // tx を drop するとスレッドの rx が Err になり終了する
-        self.sessions.clear();
+        let mut sessions: Vec<RecordingSession> = self.sessions.drain().map(|(_, s)| s).collect();
+
+        for session in &mut sessions {
+            let _ = session.tx.take();
+        }
+
+        for mut session in sessions {
+            if let Some(handle) = session.encode_handle.take() {
+                let _ = handle.join();
+            }
+            if let Some(handle) = session.writer_handle.take() {
+                let _ = handle.join();
+            }
+        }
     }
 
     pub fn dispatch_frame(&self, target: RecordingTarget, frame: Arc<FrameData>) {
         if let Some(session) = self.sessions.get(&target) {
-            let _ = session.tx.try_send(frame); // バッファが一杯の場合はスキップ (ノンブロッキング)
+            if let Some(tx) = &session.tx {
+                let _ = tx.try_send(frame);
+            }
         }
     }
 }

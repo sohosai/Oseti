@@ -11,18 +11,18 @@
 //!
 //! # アーキテクチャ
 //!
-//! - `camera`: 複数カメラのライフサイクル管理
+//! - `source`: 映像ソース（カメラ等）のライフサイクル管理
 //! - `layout`: マルチビューレイアウト設定（自動選択対応）
 //! - `renderer`: グリッドレイアウトでのレンダリング（アスペクト比対応）
 
-mod camera;
 mod layout;
 mod recorder;
+mod source;
 
-use camera::{CameraId, CameraManager};
 use eframe::egui;
 use layout::{LayoutConfig, LayoutType};
 use recorder::{RecorderManager, RecordingTarget};
+use source::{SourceId, SourceManager};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -38,18 +38,18 @@ struct CameraTexture {
 
 /// メインアプリケーション状態
 struct CameraApp {
-    /// カメラ管理
-    camera_manager: CameraManager,
+    /// 映像ソース管理
+    source_manager: SourceManager,
     /// マルチビューレイアウト設定（プレビュー用）
     layout_config: LayoutConfig,
-    /// カメラごとの描画用テクスチャ
-    camera_textures: HashMap<CameraId, CameraTexture>,
-    /// 選択中のカメラID
-    selected_camera_id: Option<CameraId>,
-    /// プレビュー中のカメラID
-    preview_camera_id: Option<CameraId>,
-    /// カメラごとの最新エラー
-    camera_errors: HashMap<CameraId, String>,
+    /// ソースごとの描画用テクスチャ
+    source_textures: HashMap<SourceId, CameraTexture>,
+    /// Programに選択中のソースID
+    selected_source_id: Option<SourceId>,
+    /// Previewに選択中のソースID
+    preview_source_id: Option<SourceId>,
+    /// ソースごとの最新エラー
+    source_errors: HashMap<SourceId, String>,
     /// 入力管理ウィンドウの表示状態
     show_input_settings: bool,
     /// カメラ名などのラベルを表示するかどうか
@@ -84,49 +84,49 @@ impl CameraApp {
     fn new(_ctx: &egui::Context) -> Self {
         nokhwa::nokhwa_initialize(|_| {});
 
-        let mut camera_manager = CameraManager::new();
+        let mut source_manager = SourceManager::new();
         // 入力は常に8枠（4x2）固定
         let input_layout_type = LayoutType::Inputs4x2;
         let mut layout_config = LayoutConfig::new(input_layout_type);
 
         // すべてのカメラを割り当て
-        let available_cameras: Vec<_> = camera_manager.available_cameras().to_vec();
-        let mut camera_errors = HashMap::new();
-        for (i, camera_info) in available_cameras.iter().enumerate() {
+        let available_sources: Vec<_> = source_manager.available_sources().to_vec();
+        let mut source_errors = HashMap::new();
+        for (i, source_info) in available_sources.iter().enumerate() {
             if i < layout_config.view_count() {
-                match camera_manager.open_camera(camera_info.id) {
+                match source_manager.open_source(source_info.id) {
                     Ok(_) => {
-                        layout_config.assign_camera(i, Some(camera_info.id));
+                        layout_config.assign_source(i, Some(source_info.id));
                     }
                     Err(e) => {
-                        camera_errors.insert(camera_info.id, format!("open failed: {}", e));
-                        layout_config.assign_camera(i, None);
+                        source_errors.insert(source_info.id, format!("open failed: {}", e));
+                        layout_config.assign_source(i, None);
                     }
                 }
             }
         }
 
-        let preview_camera_id = available_cameras.first().map(|c| c.id);
-        let selected_camera_id = available_cameras.get(1).map(|c| c.id).or(preview_camera_id);
+        let preview_source_id = available_sources.first().map(|s| s.id);
+        let selected_source_id = available_sources.get(1).map(|s| s.id).or(preview_source_id);
 
-        if let Some(camera_id) = preview_camera_id
-            && let Err(e) = camera_manager.open_camera(camera_id)
+        if let Some(source_id) = preview_source_id
+            && let Err(e) = source_manager.open_source(source_id)
         {
-            camera_errors.insert(camera_id, format!("open failed: {}", e));
+            source_errors.insert(source_id, format!("open failed: {}", e));
         }
-        if let Some(camera_id) = selected_camera_id
-            && let Err(e) = camera_manager.open_camera(camera_id)
+        if let Some(source_id) = selected_source_id
+            && let Err(e) = source_manager.open_source(source_id)
         {
-            camera_errors.insert(camera_id, format!("open failed: {}", e));
+            source_errors.insert(source_id, format!("open failed: {}", e));
         }
 
         Self {
-            camera_manager,
+            source_manager,
             layout_config,
-            camera_textures: HashMap::new(),
-            selected_camera_id,
-            preview_camera_id,
-            camera_errors,
+            source_textures: HashMap::new(),
+            selected_source_id,
+            preview_source_id,
+            source_errors,
             show_input_settings: false,
             show_labels: true,
             recorder_manager: RecorderManager::new(),
@@ -135,27 +135,27 @@ impl CameraApp {
 
     /// フレームを受信しテクスチャを更新する
     fn capture_all_frames(&mut self, ctx: &egui::Context) {
-        // 表示が必要な全カメラIDをリストアップ
-        let mut needed_cameras = std::collections::HashSet::new();
+        // 表示が必要な全ソースIDをリストアップ
+        let mut needed_sources = std::collections::HashSet::new();
 
-        if let Some(id) = self.preview_camera_id {
-            needed_cameras.insert(id);
+        if let Some(id) = self.preview_source_id {
+            needed_sources.insert(id);
         }
-        if let Some(id) = self.selected_camera_id {
-            needed_cameras.insert(id);
+        if let Some(id) = self.selected_source_id {
+            needed_sources.insert(id);
         }
         for view_idx in 0..self.layout_config.view_count() {
             if let Some(view) = self.layout_config.view(view_idx)
-                && let Some(id) = view.camera_id
+                && let Some(id) = view.source_id
             {
-                needed_cameras.insert(id);
+                needed_sources.insert(id);
             }
         }
 
-        for camera_id in needed_cameras {
-            match self.camera_manager.get_frame(camera_id) {
+        for source_id in needed_sources {
+            match self.source_manager.get_frame(source_id) {
                 Ok(Some(frame_data)) => {
-                    self.camera_errors.remove(&camera_id);
+                    self.source_errors.remove(&source_id);
                     let w = frame_data.width as usize;
                     let h = frame_data.height as usize;
 
@@ -164,16 +164,16 @@ impl CameraApp {
                     let color_image = egui::ColorImage::from_rgb([w, h], &frame_data.pixels);
 
                     // テクスチャを更新（なければ作成）
-                    if let Some(tex) = self.camera_textures.get_mut(&camera_id) {
+                    if let Some(tex) = self.source_textures.get_mut(&source_id) {
                         tex.handle.set(color_image, egui::TextureOptions::LINEAR);
                         tex.width = frame_data.width;
                         tex.height = frame_data.height;
                     } else {
-                        let name = format!("camera_tex_{}", camera_id.0);
+                        let name = format!("source_tex_{}", source_id.0);
                         let handle =
                             ctx.load_texture(&name, color_image, egui::TextureOptions::LINEAR);
-                        self.camera_textures.insert(
-                            camera_id,
+                        self.source_textures.insert(
+                            source_id,
                             CameraTexture {
                                 handle,
                                 width: frame_data.width,
@@ -188,7 +188,7 @@ impl CameraApp {
                         // どのInputに割り当てられているかを探して録画へ送る
                         for view_idx in 0..self.layout_config.view_count() {
                             if let Some(view) = self.layout_config.view(view_idx)
-                                && view.camera_id == Some(camera_id)
+                                && view.source_id == Some(source_id)
                             {
                                 self.recorder_manager.dispatch_frame(
                                     RecordingTarget::Input(view_idx),
@@ -198,13 +198,13 @@ impl CameraApp {
                         }
 
                         // もし現在 Program に選ばれていたら Program 用に送る
-                        if Some(camera_id) == self.selected_camera_id {
+                        if Some(source_id) == self.selected_source_id {
                             self.recorder_manager
                                 .dispatch_frame(RecordingTarget::Program, frame_arc.clone());
                         }
 
                         // もし現在 Preview に選ばれていたら Preview 用に送る
-                        if Some(camera_id) == self.preview_camera_id {
+                        if Some(source_id) == self.preview_source_id {
                             self.recorder_manager
                                 .dispatch_frame(RecordingTarget::Preview, frame_arc);
                         }
@@ -214,7 +214,7 @@ impl CameraApp {
                     // まだ新しいフレームが無いので何もしない (ノンブロッキング)
                 }
                 Err(e) => {
-                    self.camera_errors.insert(camera_id, e);
+                    self.source_errors.insert(source_id, e);
                 }
             }
         }
@@ -226,7 +226,7 @@ impl eframe::App for CameraApp {
         // キーボード入力処理
         if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
             // エンターキーでプログラムとプレビューをスイッチング（スワップ）
-            std::mem::swap(&mut self.selected_camera_id, &mut self.preview_camera_id);
+            std::mem::swap(&mut self.selected_source_id, &mut self.preview_source_id);
         }
 
         // 数字キー(1〜8)でプレビューカメラを切り替え（レイアウト上の入力スロットに基づく）
@@ -243,9 +243,9 @@ impl eframe::App for CameraApp {
         for (key, idx) in num_keys.iter() {
             if ctx.input(|i| i.key_pressed(*key))
                 && let Some(view) = self.layout_config.view(*idx)
-                && let Some(cam_id) = view.camera_id
+                && let Some(source_id) = view.source_id
             {
-                self.preview_camera_id = Some(cam_id);
+                self.preview_source_id = Some(source_id);
             }
         }
 
@@ -272,78 +272,78 @@ impl eframe::App for CameraApp {
                     ui.checkbox(&mut self.show_labels, "Show Labels");
                 });
 
-                ui.menu_button("Cameras", |ui| {
-                    let camera_names: Vec<String> = self
-                        .camera_manager
-                        .available_cameras()
+                ui.menu_button("Sources", |ui| {
+                    let source_names: Vec<String> = self
+                        .source_manager
+                        .available_sources()
                         .iter()
-                        .map(|c| c.name.clone())
+                        .map(|s| s.name.clone())
                         .collect();
 
-                    // プログラムカメラの選択
-                    ui.menu_button("Program Camera", |ui| {
+                    // Programソースの選択
+                    ui.menu_button("Program Source", |ui| {
                         let selected_idx = self
-                            .selected_camera_id
+                            .selected_source_id
                             .and_then(|id| {
-                                self.camera_manager
-                                    .available_cameras()
+                                self.source_manager
+                                    .available_sources()
                                     .iter()
-                                    .position(|c| c.id == id)
+                                    .position(|s| s.id == id)
                             })
                             .unwrap_or(0);
 
                         let mut new_selected = selected_idx;
-                        for (i, name) in camera_names.iter().enumerate() {
+                        for (i, name) in source_names.iter().enumerate() {
                             ui.radio_value(&mut new_selected, i, name);
                         }
 
                         if new_selected != selected_idx
-                            && new_selected < self.camera_manager.available_cameras().len()
+                            && new_selected < self.source_manager.available_sources().len()
                         {
-                            let new_camera = &self.camera_manager.available_cameras()[new_selected];
-                            let new_id = new_camera.id;
-                            match self.camera_manager.open_camera(new_id) {
+                            let new_source = &self.source_manager.available_sources()[new_selected];
+                            let new_id = new_source.id;
+                            match self.source_manager.open_source(new_id) {
                                 Ok(_) => {
-                                    self.selected_camera_id = Some(new_id);
-                                    self.camera_errors.remove(&new_id);
+                                    self.selected_source_id = Some(new_id);
+                                    self.source_errors.remove(&new_id);
                                 }
                                 Err(e) => {
-                                    self.camera_errors
+                                    self.source_errors
                                         .insert(new_id, format!("open failed: {}", e));
                                 }
                             }
                         }
                     });
 
-                    // プレビューカメラの選択
-                    ui.menu_button("Preview Camera", |ui| {
+                    // Previewソースの選択
+                    ui.menu_button("Preview Source", |ui| {
                         let preview_idx = self
-                            .preview_camera_id
+                            .preview_source_id
                             .and_then(|id| {
-                                self.camera_manager
-                                    .available_cameras()
+                                self.source_manager
+                                    .available_sources()
                                     .iter()
-                                    .position(|c| c.id == id)
+                                    .position(|s| s.id == id)
                             })
                             .unwrap_or(0);
 
                         let mut new_preview = preview_idx;
-                        for (i, name) in camera_names.iter().enumerate() {
+                        for (i, name) in source_names.iter().enumerate() {
                             ui.radio_value(&mut new_preview, i, name);
                         }
 
                         if new_preview != preview_idx
-                            && new_preview < self.camera_manager.available_cameras().len()
+                            && new_preview < self.source_manager.available_sources().len()
                         {
-                            let new_camera = &self.camera_manager.available_cameras()[new_preview];
-                            let new_id = new_camera.id;
-                            match self.camera_manager.open_camera(new_id) {
+                            let new_source = &self.source_manager.available_sources()[new_preview];
+                            let new_id = new_source.id;
+                            match self.source_manager.open_source(new_id) {
                                 Ok(_) => {
-                                    self.preview_camera_id = Some(new_id);
-                                    self.camera_errors.remove(&new_id);
+                                    self.preview_source_id = Some(new_id);
+                                    self.source_errors.remove(&new_id);
                                 }
                                 Err(e) => {
-                                    self.camera_errors
+                                    self.source_errors
                                         .insert(new_id, format!("open failed: {}", e));
                                 }
                             }
@@ -353,8 +353,8 @@ impl eframe::App for CameraApp {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!(
-                        "📹 Cameras: {}",
-                        self.camera_manager.available_cameras().len()
+                        "📹 Sources: {}",
+                        self.source_manager.available_sources().len()
                     ));
 
                     // 全体の録画コントロール
@@ -380,17 +380,17 @@ impl eframe::App for CameraApp {
             });
         });
 
-        // カメラエラーの表示（別ウィンドウで表示）
-        if !self.camera_errors.is_empty() {
-            egui::Window::new("Camera Errors")
+        // ソースエラーの表示（別ウィンドウで表示）
+        if !self.source_errors.is_empty() {
+            egui::Window::new("Source Errors")
                 .anchor(egui::Align2::RIGHT_BOTTOM, egui::Vec2::new(-10.0, -10.0))
                 .collapsible(true)
                 .show(ctx, |ui| {
-                    for camera in self.camera_manager.available_cameras() {
-                        if let Some(err) = self.camera_errors.get(&camera.id) {
+                    for source in self.source_manager.available_sources() {
+                        if let Some(err) = self.source_errors.get(&source.id) {
                             ui.colored_label(
                                 egui::Color32::RED,
-                                format!("{}: {}", camera.name, err),
+                                format!("{}: {}", source.name, err),
                             );
                         }
                     }
@@ -404,49 +404,49 @@ impl eframe::App for CameraApp {
             .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| {
-                let available_cameras = self.camera_manager.available_cameras().to_vec();
+                let available_sources = self.source_manager.available_sources().to_vec();
 
                 for idx in 0..self.layout_config.view_count() {
                     ui.horizontal(|ui| {
                         ui.label(format!("Input {}:", idx + 1));
 
-                        let current_camera_id =
-                            self.layout_config.view(idx).and_then(|v| v.camera_id);
+                        let current_source_id =
+                            self.layout_config.view(idx).and_then(|v| v.source_id);
 
-                        let selected_text = if let Some(id) = current_camera_id {
-                            available_cameras
+                        let selected_text = if let Some(id) = current_source_id {
+                            available_sources
                                 .iter()
-                                .find(|c| c.id == id)
-                                .map(|c| c.name.clone())
+                                .find(|s| s.id == id)
+                                .map(|s| s.name.clone())
                                 .unwrap_or_else(|| "Unknown".to_string())
                         } else {
                             "None".to_string()
                         };
 
-                        egui::ComboBox::from_id_source(format!("input_select_{}", idx))
+                        egui::ComboBox::from_id_salt(format!("input_select_{}", idx))
                             .selected_text(selected_text)
                             .show_ui(ui, |ui| {
                                 // "None" の選択肢
-                                let mut is_none = current_camera_id.is_none();
+                                let mut is_none = current_source_id.is_none();
                                 if ui.selectable_value(&mut is_none, true, "None").clicked() {
-                                    self.layout_config.assign_camera(idx, None);
+                                    self.layout_config.assign_source(idx, None);
                                 }
 
-                                // 利用可能なカメラの選択肢
-                                for camera in &available_cameras {
-                                    let mut is_selected = current_camera_id == Some(camera.id);
+                                // 利用可能なソースの選択肢
+                                for source in &available_sources {
+                                    let mut is_selected = current_source_id == Some(source.id);
                                     if ui
-                                        .selectable_value(&mut is_selected, true, &camera.name)
+                                        .selectable_value(&mut is_selected, true, &source.name)
                                         .clicked()
                                     {
-                                        // 選択されたカメラを開く
-                                        if let Err(e) = self.camera_manager.open_camera(camera.id) {
-                                            self.camera_errors
-                                                .insert(camera.id, format!("open failed: {}", e));
+                                        // 選択されたソースを開く
+                                        if let Err(e) = self.source_manager.open_source(source.id) {
+                                            self.source_errors
+                                                .insert(source.id, format!("open failed: {}", e));
                                         } else {
-                                            self.camera_errors.remove(&camera.id);
+                                            self.source_errors.remove(&source.id);
                                         }
-                                        self.layout_config.assign_camera(idx, Some(camera.id));
+                                        self.layout_config.assign_source(idx, Some(source.id));
                                     }
                                 }
                             });
@@ -540,7 +540,7 @@ impl eframe::App for CameraApp {
             painter.rect_filled(bg_rect, 0.0, egui::Color32::BLACK);
 
             // 画像のUVと描画をヘルパー関数で処理
-            let draw_cam = |camera_id: Option<CameraId>,
+            let draw_cam = |source_id: Option<SourceId>,
                             rect: egui::Rect,
                             label_text: &str,
                             border_override: Option<egui::Color32>,
@@ -548,9 +548,9 @@ impl eframe::App for CameraApp {
                 let mut is_preview = false;
                 let mut is_program = false;
 
-                if let Some(id) = camera_id {
-                    is_preview = Some(id) == self.preview_camera_id;
-                    is_program = Some(id) == self.selected_camera_id;
+                if let Some(id) = source_id {
+                    is_preview = Some(id) == self.preview_source_id;
+                    is_program = Some(id) == self.selected_source_id;
                 }
 
                 let mut stroke_color = egui::Color32::DARK_GRAY;
@@ -567,9 +567,9 @@ impl eframe::App for CameraApp {
                     stroke_width = 3.0; // プレビューは緑枠
                 }
 
-                if let Some(id) = camera_id {
+                if let Some(id) = source_id {
                     // テクスチャがあれば取得
-                    if let Some(tex) = self.camera_textures.get(&id) {
+                    if let Some(tex) = self.source_textures.get(&id) {
                         let img_aspect = tex.width as f32 / tex.height as f32;
                         let target_aspect = 16.0 / 9.0;
 
@@ -692,7 +692,7 @@ impl eframe::App for CameraApp {
                 .recorder_manager
                 .is_recording_target(&RecordingTarget::Preview);
             draw_cam(
-                self.preview_camera_id,
+                self.preview_source_id,
                 preview_rect,
                 "Preview",
                 Some(egui::Color32::GREEN),
@@ -708,7 +708,7 @@ impl eframe::App for CameraApp {
                 .recorder_manager
                 .is_recording_target(&RecordingTarget::Program);
             draw_cam(
-                self.selected_camera_id,
+                self.selected_source_id,
                 program_rect,
                 "Program",
                 Some(egui::Color32::RED),
@@ -736,11 +736,11 @@ impl eframe::App for CameraApp {
                         egui::vec2(cell_width, cell_height),
                     );
 
-                    // レイアウト上のカメラIDを取得
-                    let (cam_id, cam_label) = if view_idx < self.layout_config.view_count() {
+                    // レイアウト上のソースIDを取得
+                    let (source_id, source_label) = if view_idx < self.layout_config.view_count() {
                         (
-                            self.layout_config.view(view_idx).and_then(|v| v.camera_id),
-                            format!("Cam {}", view_idx + 1),
+                            self.layout_config.view(view_idx).and_then(|v| v.source_id),
+                            format!("Input {}", view_idx + 1),
                         )
                     } else {
                         (None, String::new())
@@ -750,7 +750,7 @@ impl eframe::App for CameraApp {
                         .recorder_manager
                         .is_recording_target(&RecordingTarget::Input(view_idx));
 
-                    draw_cam(cam_id, rect, &cam_label, None, is_rec_input);
+                    draw_cam(source_id, rect, &source_label, None, is_rec_input);
                     view_idx += 1;
                 }
             }

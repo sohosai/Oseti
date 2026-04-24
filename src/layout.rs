@@ -4,12 +4,13 @@
 //! - 上段: Preview / Program（各1面）
 //! - 下段: Inputs 4x2（計8枠）
 
-use crate::camera::CameraId;
+use crate::source::SourceId;
 
 pub const INPUT_COLS: usize = 4;
 pub const INPUT_ROWS: usize = 2;
 
 /// 固定用途のレイアウトタイプ
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutType {
     /// 単一ビュー
@@ -47,13 +48,13 @@ impl std::fmt::Display for LayoutType {
 #[derive(Debug, Clone)]
 pub struct ViewDescriptor {
     /// このビューに割り当てられたカメラ
-    pub camera_id: Option<CameraId>,
+    pub source_id: Option<SourceId>,
 }
 
 impl ViewDescriptor {
     /// 新しいビュー設定を作成
-    pub fn new(camera_id: Option<CameraId>) -> Self {
-        Self { camera_id }
+    pub fn new(source_id: Option<SourceId>) -> Self {
+        Self { source_id }
     }
 }
 
@@ -86,9 +87,9 @@ impl LayoutConfig {
     }
 
     /// 指定ビューにカメラを割り当て
-    pub fn assign_camera(&mut self, view_index: usize, camera_id: Option<CameraId>) {
+    pub fn assign_source(&mut self, view_index: usize, source_id: Option<SourceId>) {
         if let Some(view) = self.views.get_mut(view_index) {
-            view.camera_id = camera_id;
+            view.source_id = source_id;
         }
     }
 }
